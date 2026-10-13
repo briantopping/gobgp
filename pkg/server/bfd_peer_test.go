@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"sync/atomic"
 	"testing"
@@ -376,4 +377,37 @@ func Test_TxPacket(t *testing.T) {
 	assert.NoError(err)
 
 	p.Stop()
+}
+
+func Test_BfdPeerRefreshClientFollowsSource(t *testing.T) {
+	assert := assert.New(t)
+
+	p := &bfdPeer{logger: slog.Default(), peerAddress: netip.MustParseAddr("127.0.0.1"), peerPort: 13784}
+
+	// a client dialed from an address the kernel would not choose now, as at boot before the interface address
+	stale, err := net.DialUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.2")}, p.remoteUDPAddr())
+	if err != nil {
+		t.Skipf("127.0.0.2 is not assignable here: %v", err)
+	}
+
+	p.udpClient = stale
+	p.refreshClient()
+	defer p.udpClient.Close()
+
+	assert.NotSame(stale, p.udpClient)
+	assert.Equal("127.0.0.1", p.udpClient.LocalAddr().(*net.UDPAddr).IP.String())
+}
+
+func Test_BfdPeerRefreshClientKeepsSource(t *testing.T) {
+	assert := assert.New(t)
+
+	p := &bfdPeer{logger: slog.Default(), peerAddress: netip.MustParseAddr("127.0.0.1"), peerPort: 13784}
+	p.startClient()
+	assert.NotNil(p.udpClient)
+	defer p.udpClient.Close()
+
+	before := p.udpClient
+	p.refreshClient()
+
+	assert.Same(before, p.udpClient)
 }

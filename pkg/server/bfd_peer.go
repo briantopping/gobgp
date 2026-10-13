@@ -368,6 +368,10 @@ func (p *bfdPeer) rxPacket(h *bfd.BFDHeader) {
 }
 
 func (p *bfdPeer) tx() {
+	if p.sessionState() != api.BfdSessionState_BFD_SESSION_STATE_UP {
+		p.refreshClient()
+	}
+
 	switch p.sessionState() {
 	case api.BfdSessionState_BFD_SESSION_STATE_UP:
 		p.sendPacket(bfd.StateUp, false, false, p.yourDiscriminator)
@@ -376,6 +380,43 @@ func (p *bfdPeer) tx() {
 	default:
 		p.sendPacket(bfd.StateDown, false, false, 0)
 	}
+}
+
+// refreshClient re-dials when the kernel would now choose a different source address. A connected socket keeps
+// the source it was given at dial time, and the first dial can precede the interface address the peer expects
+// (still in duplicate address detection), so a session that never comes up is re-dialed until it does.
+func (p *bfdPeer) refreshClient() {
+	old := p.udpClient
+	if old == nil {
+		return
+	}
+
+	p.udpClient = nil
+	p.startClient()
+
+	if p.udpClient == nil {
+		p.udpClient = old
+		return
+	}
+
+	oldIP := old.LocalAddr().(*net.UDPAddr).IP
+	newIP := p.udpClient.LocalAddr().(*net.UDPAddr).IP
+
+	if oldIP.Equal(newIP) {
+		_ = p.udpClient.Close()
+		p.udpClient = old
+
+		return
+	}
+
+	_ = old.Close()
+
+	p.logger.Info("BFD source address changed",
+		slog.String("Topic", "bfd"),
+		slog.String("Peer", p.peerAddress.String()),
+		slog.String("Old", oldIP.String()),
+		slog.String("New", newIP.String()),
+	)
 }
 
 func (p *bfdPeer) expiry() {
